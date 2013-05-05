@@ -3,11 +3,12 @@ package nnalgs
 
 import (
 	"fmt"
+	matrix "github.com/skelterjohn/go.matrix"
 	"math"
 	"math/rand"
-	matrix "github.com/skelterjohn/go.matrix"
 )
-var _=fmt.Printf
+
+var _ = fmt.Printf
 
 // A scalar function for use in a neural network
 type Function interface {
@@ -47,25 +48,15 @@ type Layer interface {
 	SetW(*matrix.DenseMatrix)
 }
 
-// A neural network
-type Network interface {
-	// Evaluate the network with network inputs as parameters and outputs as returns
-	F(inputs []float64) []float64
-	// Evaluate the gradient of the network
-	FG(inputs []float64) ([]float64, []*matrix.DenseMatrix)
-	// Evaluate the Hessian of the network
-	FGH(inputs []float64) ([]float64, []*matrix.DenseMatrix, []*matrix.DenseMatrix)
-	// Get the weight vector of this layer
-	W() *matrix.DenseMatrix
-	// Set the weight vector for this layer
-	SetW(*matrix.DenseMatrix)
-}
-
 type network struct {
-	layers []layer
+	layers  []layer
 	ninputs int
 }
-func newNetwork(ninputs int, nnodes []int, f Function, bound float64) *network {
+
+func NewNetwork(ninputs int, nnodes []int, f Function, bound float64) *network {
+	if nnodes[len(nnodes)-1] != 1 {
+		panic("Only built for one output!")
+	}
 	ntwk := &network{ninputs: ninputs}
 	for _, nodes := range nnodes[:len(nnodes)-1] {
 		ntwk.layers = append(ntwk.layers, newLayer(nodes, ninputs+1, f, bound))
@@ -74,35 +65,32 @@ func newNetwork(ninputs int, nnodes []int, f Function, bound float64) *network {
 	ntwk.layers = append(ntwk.layers, newLayer(nnodes[len(nnodes)-1], ninputs+1, Identity(true), bound))
 	return ntwk
 }
-func (n *network) F(inputs []float64) []float64 {
-	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs) + 1, 1)
+func (n *network) F(inputs []float64) float64 {
+	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs)+1, 1)
 	for _, lyr := range n.layers {
 		x = lyr.F(x)
-		x = ensure(x.Transpose().Augment(matrix.Ones(1,1))).Transpose()
+		x = ensure(x.Transpose().Augment(matrix.Ones(1, 1))).Transpose()
 	}
-	arr := x.Array()
-	return arr[:len(arr)-1]
+	return x.Get(0, 0)
 }
-func (n *network) FG(inputs []float64) ([]float64, []*matrix.DenseMatrix) {
-	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs) + 1, 1)
+func (n *network) FG(inputs []float64) (float64, *matrix.DenseMatrix) {
+	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs)+1, 1)
 	g := make([]*matrix.DenseMatrix, 0)
 	for _, lyr := range n.layers {
 		x, g = lyr.F(x), lyr.G(x, g)
-		x = ensure(x.Transpose().Augment(matrix.Ones(1,1))).Transpose()
+		x = ensure(x.Transpose().Augment(matrix.Ones(1, 1))).Transpose()
 	}
-	arr := x.Array()
-	return arr[:len(arr)-1], g
+	return x.Get(0, 0), g[0]
 }
-func (n *network) FGH(inputs []float64) ([]float64, []*matrix.DenseMatrix, []*matrix.DenseMatrix) {
-	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs) + 1, 1)
+func (n *network) FGH(inputs []float64) (float64, *matrix.DenseMatrix, *matrix.DenseMatrix) {
+	x := matrix.MakeDenseMatrix(append(inputs, 1), len(inputs)+1, 1)
 	g := make([]*matrix.DenseMatrix, 0)
 	h := make([]*matrix.DenseMatrix, 0)
 	for _, lyr := range n.layers {
 		x, g, h = lyr.F(x), lyr.G(x, g), lyr.H(x, g, h)
-		x = ensure(x.Transpose().Augment(matrix.Ones(1,1))).Transpose()
+		x = ensure(x.Transpose().Augment(matrix.Ones(1, 1))).Transpose()
 	}
-	arr := x.Array()
-	return arr[:len(arr)-1], g, h
+	return x.Get(0, 0), g[0], h[0]
 }
 func (n *network) W() *matrix.DenseMatrix {
 	weights := matrix.Zeros(1, 0)
@@ -121,8 +109,17 @@ func (n *network) SetW(weights *matrix.DenseMatrix) {
 		nin = len(lyr)
 	}
 }
+func (n *network) Len() int {
+	nin, tot := n.ninputs, 0
+	for _, lyr := range n.layers {
+		tot += (nin + 1) * len(lyr)
+		nin = len(lyr)
+	}
+	return tot
+}
 
 type layer []Node
+
 func newLayer(nodes, inputs int, f Function, bound float64) layer {
 	l := make(layer, nodes)
 	for i := 0; i < nodes; i++ {
@@ -162,24 +159,25 @@ func (lyr layer) W() *matrix.DenseMatrix {
 func (lyr layer) SetW(weights *matrix.DenseMatrix) {
 	ni := weights.Rows() / len(lyr)
 	for i, node := range lyr {
-		node.SetW(weights.GetMatrix(i * ni, 0, ni, 1))
+		node.SetW(weights.GetMatrix(i*ni, 0, ni, 1))
 	}
 }
 
 type node struct {
-	fn Function
+	fn      Function
 	weights *matrix.DenseMatrix
 }
+
 func newNode(f Function, weights *matrix.DenseMatrix) *node {
 	return &node{f, weights}
 }
 func (n *node) F(x *matrix.DenseMatrix) float64 {
-	return n.fn.F(ensure(n.weights.Transpose().TimesDense(x)).Get(0,0))
+	return n.fn.F(ensure(n.weights.Transpose().TimesDense(x)).Get(0, 0))
 }
 func (n *node) G(inputs *matrix.DenseMatrix, gradients []*matrix.DenseMatrix) *matrix.DenseMatrix {
 	x := ensure(n.weights.Transpose().TimesDense(inputs)).Get(0, 0)
 	dy := n.fn.G(x)
-	ret := matrix.Zeros(1,0)
+	ret := matrix.Zeros(1, 0)
 	for i, gradient := range gradients {
 		g := gradient.Copy()
 		g.Scale(n.weights.Get(i, 0))
@@ -200,7 +198,7 @@ func (n *node) H(inputs *matrix.DenseMatrix, gradients, hessians []*matrix.Dense
 	}
 	lw := n.weights.Rows()
 
-	H := matrix.Zeros(ni * li + lw, ni * li + lw)
+	H := matrix.Zeros(ni*li+lw, ni*li+lw)
 
 	for i, hessian := range hessians {
 		hess := hessian.Copy()
@@ -209,8 +207,8 @@ func (n *node) H(inputs *matrix.DenseMatrix, gradients, hessians []*matrix.Dense
 	}
 
 	for i, gradient := range gradients {
-		H.SetMatrix(i * li, li * ni + i, gradient)
-		H.SetMatrix(li * ni + i, i * li, gradient.Transpose())
+		H.SetMatrix(i*li, li*ni+i, gradient)
+		H.SetMatrix(li*ni+i, i*li, gradient.Transpose())
 	}
 
 	xxt := ensure(inputs.TimesDense(inputs.Transpose()))
@@ -228,6 +226,7 @@ func (n *node) SetW(w *matrix.DenseMatrix) {
 
 // The standard hyperbolic sigmoid activation function (tanh)
 type HyperbolicSigmoid bool
+
 func (h HyperbolicSigmoid) F(x float64) float64 {
 	return math.Tanh(x)
 }
@@ -241,6 +240,7 @@ func (h HyperbolicSigmoid) H(x float64) float64 {
 
 // The standard hyperbolic sigmoid activation function (tanh)
 type Identity bool
+
 func (h Identity) F(x float64) float64 {
 	return x
 }
